@@ -5,7 +5,20 @@ import os
 import subprocess
 from pathlib import Path
 from dataclasses import dataclass, asdict, field
-from typing import Dict, List, Optional, Any, Tuple, TypedDict
+from typing import (
+    Dict,
+    List,
+    Optional,
+    Any,
+    Tuple,
+    TypedDict,
+    Union,
+    cast,
+    NotRequired,
+    TypeVar,
+    Protocol,
+    Mapping,
+)
 import threading
 import mido
 import httpx
@@ -45,7 +58,7 @@ class ProjectInfo(TypedDict):
 
 class TrackInfo(TypedDict):
     name: str
-    instrument: int
+    instrument: str
     channel: int
     is_muted: bool
     is_solo: bool
@@ -63,16 +76,50 @@ class DebugInfo(TypedDict):
     error: Optional[str]
 
 
+class HasGet(Protocol):
+    def get(self, key: str, default: Any = None) -> Any: ...
+
+
+T = TypeVar("T", bound=HasGet)
+
+
+class NoteEvent(TypedDict, total=False):
+    type: str  # "note"
+    note: int
+    velocity: int
+    time: NotRequired[int]
+    duration: NotRequired[int]
+
+
+class ControlEvent(TypedDict, total=False):
+    type: str  # "control"
+    control: int
+    value: int
+    time: NotRequired[int]
+
+
+Event = Union[NoteEvent, ControlEvent]
+
+
+def safe_get(obj: Any, key: str, default: Any = None) -> Any:
+    """Safely get a value from a dict-like object."""
+    if isinstance(obj, dict):
+        return obj.get(key, default)
+    return default
+
+
 @dataclass
 class TrackState:
     name: str
-    instrument: int
+    instrument: str
     channel: int
     is_muted: bool = False
     is_solo: bool = False
     volume: float = 1.0
     pan: float = 0.0
-    events: List[Dict[str, Any]] = field(default_factory=list)
+    events: List[Dict[str, Any]] = field(
+        default_factory=list
+    )  # Keep as Dict for flexibility
 
 
 @dataclass
@@ -101,6 +148,27 @@ class ProjectState:
         }
 
 
+# General MIDI program numbers for instruments
+INSTRUMENT_PROGRAMS = {
+    "piano": 0,  # Acoustic Grand Piano
+    "strings": 48,  # String Ensemble 1
+    "bass": 32,  # Acoustic Bass
+    "brass": 61,  # Brass Section
+    "choir": 52,  # Choir Aahs
+    "synth": 80,  # Square Lead
+    "organ": 16,  # Rock Organ
+    "drums": 0,  # Special case - use channel 9
+    "flute": 73,  # Flute
+    "fx": 96,  # FX 1 (rain)
+    "pads": 88,  # Pad 1 (new age)
+    "glockenspiel": 9,  # Glockenspiel
+    "trumpet": 56,  # Trumpet
+}
+
+# MIDI settings
+MIDI_TICKS_PER_BEAT = 480  # Standard MIDI resolution
+
+
 class MidiCompositionServer:
     def __init__(self) -> None:
         """Initialize the MIDI composition server."""
@@ -109,6 +177,16 @@ class MidiCompositionServer:
 
         # Initialize soundfont manager
         self.soundfont_manager = SoundfontManager()
+
+        # Initialize synth settings
+        self.synth_settings = {
+            "gain": 0.2,
+            "reverb": {"room_size": 0.2, "damping": 0.0, "width": 0.5, "level": 0.9},
+            "chorus": {"nr": 3, "level": 2.0, "speed": 0.3, "depth": 8.0, "type": 0},
+        }
+
+        # Initialize FluidSynth
+        self.fs: Optional[FluidSynth] = None
 
         # Real-time collaboration state
         self.connected_clients: set[str] = set()
@@ -295,56 +373,115 @@ class MidiCompositionServer:
         except Exception as e:
             return {"success": False, "error": f"Unexpected error: {str(e)}"}
 
-    def create_track(self, name: str, instrument: int, channel: int) -> bool:
-        """Create a new track with specified instrument"""
+    def create_track(self, name: str, instrument: str, channel: int) -> Dict[str, Any]:
+        """Create a new track with specified instrument and ensure its soundfont is available.
+
+        Args:
+            name: Name of the track
+            instrument: Name of the instrument (must match a soundfont name from soundfontSources.json)
+            channel: MIDI channel number (0-15)
+
+        Returns:
+            Dict containing success status and error message if failed
+        """
         with self.state_lock:
             if not self.current_project:
-                return False
+                return {"success": False, "error": "No project is currently loaded"}
+
+            # Try to find and download the soundfont if not already available
+            if not self.soundfont_manager.find_soundfont(instrument)["success"]:
+                download_result = self.soundfont_manager.download_soundfont(instrument)
+                if not download_result["success"]:
+                    return {
+                        "success": False,
+                        "error": f"Could not find or download soundfont for instrument {instrument}",
+                    }
+
+            # Create the track
             track = TrackState(name=name, instrument=instrument, channel=channel)
             self.current_project.tracks[name] = track
             self._save_state()
-            return True
+            return {"success": True}
 
-    def mute_track(self, track_id: str) -> bool:
-        """Silence a specific track"""
+    def mute_track(self, track_id: str) -> Dict[str, Any]:
+        """Silence a specific track.
+
+        Args:
+            track_id: Name of the track to mute
+
+        Returns:
+            Dict containing success status and error message if failed
+        """
         with self.state_lock:
             if not self.current_project or track_id not in self.current_project.tracks:
-                return False
+                return {"success": False, "error": f"Track '{track_id}' not found"}
             self.current_project.tracks[track_id].is_muted = True
             self._save_state()
-            return True
+            return {"success": True}
 
-    def solo_track(self, track_id: str) -> bool:
-        """Solo a specific track"""
+    def solo_track(self, track_id: str) -> Dict[str, Any]:
+        """Solo a specific track.
+
+        Args:
+            track_id: Name of the track to solo
+
+        Returns:
+            Dict containing success status and error message if failed
+        """
         with self.state_lock:
             if not self.current_project or track_id not in self.current_project.tracks:
-                return False
+                return {"success": False, "error": f"Track '{track_id}' not found"}
             self.current_project.tracks[track_id].is_solo = True
             self._save_state()
-            return True
+            return {"success": True}
 
-    def set_track_volume(self, track_id: str, volume: float) -> bool:
-        """Adjust volume for individual tracks"""
+    def set_track_volume(self, track_id: str, volume: float) -> Dict[str, Any]:
+        """Adjust volume for individual tracks.
+
+        Args:
+            track_id: Name of the track to adjust
+            volume: Volume level (0.0 to 1.0)
+
+        Returns:
+            Dict containing success status and error message if failed
+        """
         with self.state_lock:
             if not self.current_project or track_id not in self.current_project.tracks:
-                return False
+                return {"success": False, "error": f"Track '{track_id}' not found"}
             self.current_project.tracks[track_id].volume = volume
             self._save_state()
-            return True
+            return {"success": True}
 
-    def set_track_pan(self, track_id: str, pan: float) -> bool:
-        """Adjust stereo positioning"""
+    def set_track_pan(self, track_id: str, pan: float) -> Dict[str, Any]:
+        """Adjust stereo positioning.
+
+        Args:
+            track_id: Name of the track to adjust
+            pan: Pan position (-1.0 to 1.0, where -1 is left, 0 is center, 1 is right)
+
+        Returns:
+            Dict containing success status and error message if failed
+        """
         with self.state_lock:
             if not self.current_project or track_id not in self.current_project.tracks:
-                return False
+                return {"success": False, "error": f"Track '{track_id}' not found"}
             self.current_project.tracks[track_id].pan = pan
             self._save_state()
-            return True
+            return {"success": True}
 
     def create_project(
         self, name: str, tempo: int, time_signature: Tuple[int, int]
-    ) -> bool:
-        """Initialize a new composition project"""
+    ) -> Dict[str, Any]:
+        """Initialize a new composition project.
+
+        Args:
+            name: Name of the project
+            tempo: Tempo in BPM
+            time_signature: Tuple of (numerator, denominator)
+
+        Returns:
+            Dict containing success status and error message if failed
+        """
         try:
             project = ProjectState(
                 name=name, tempo=tempo, time_signature=time_signature, tracks={}
@@ -352,26 +489,57 @@ class MidiCompositionServer:
             self.current_project = project
             self.projects[name] = project
             self._save_state()
-            return True
+            return {"success": True}
         except Exception as e:
-            print(f"Error creating project: {e}")
-            return False
+            return {"success": False, "error": str(e)}
 
-    def save_project(self, path: Optional[str] = None) -> bool:
-        """Save the current project state"""
-        if not self.current_project:
-            return False
+    def save_project(self) -> Dict[str, Any]:
+        """Save the current project state to a file.
 
-        with self.state_lock:
-            self._save_state()
-            if path:
-                # Also save as MIDI if path provided
-                self.export_midi(path)
-            return True
+        Returns:
+            Dict containing success status and error message if failed
+        """
+        try:
+            if not self.current_project:
+                return {"success": False, "error": "No project is currently loaded"}
 
-    def load_project(self, name: str) -> bool:
-        """Load a saved project"""
-        return self._load_state(name)
+            # Save project state to JSON file
+            project_file = self.workspace_dir / f"{self.current_project.name}.json"
+            with open(project_file, "w") as f:
+                json.dump(asdict(self.current_project), f, indent=2)
+            return {"success": True}
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+
+    def load_project(self, name: str) -> Dict[str, Any]:
+        """Load a project from a file.
+
+        Args:
+            name: Name of the project to load
+
+        Returns:
+            Dict containing success status and error message if failed
+        """
+        try:
+            project_file = self.workspace_dir / f"{name}.json"
+            if not project_file.exists():
+                return {
+                    "success": False,
+                    "error": f"Project file not found: {name}.json",
+                }
+
+            with open(project_file) as f:
+                data = json.load(f)
+                self.current_project = ProjectState.from_dict(data)
+                self.projects[name] = self.current_project
+                return {"success": True}
+        except json.JSONDecodeError:
+            return {
+                "success": False,
+                "error": f"Invalid JSON in project file: {name}.json",
+            }
+        except Exception as e:
+            return {"success": False, "error": str(e)}
 
     def remove_project(self, project_name: str) -> Dict[str, Any]:
         """Remove a project from the workspace."""
@@ -403,49 +571,114 @@ class MidiCompositionServer:
             logging.error(f"Error removing project {project_name}: {e}")
             return {"success": False, "error": str(e)}
 
-    def export_midi(self, path: str) -> bool:
-        """Export the composition as a standard MIDI file"""
+    def export_midi(self, path: str) -> Dict[str, Any]:
+        """Export the composition as a standard MIDI file.
+
+        Args:
+            path: Path to save the MIDI file
+
+        Returns:
+            Dict containing success status and error message if failed
+        """
         if not self.current_project:
-            return False
+            return {"success": False, "error": "No project is currently loaded"}
 
-        with self.state_lock:
-            # Create a new MIDI file
-            mid = mido.MidiFile()
+        try:
+            with self.state_lock:
+                # Create a new MIDI file
+                mid = mido.MidiFile()
+                mid.ticks_per_beat = MIDI_TICKS_PER_BEAT
 
-            # Add tracks for each track in the project
-            for track_name, track in self.current_project.tracks.items():
-                midi_track = mido.MidiTrack()
-                mid.tracks.append(midi_track)
+                # Add tracks for each track in the project
+                for track_name, track in self.current_project.tracks.items():
+                    midi_track = mido.MidiTrack()
+                    mid.tracks.append(midi_track)
 
-                # Add track events
-                for event in track.events:
-                    if event["type"] == "note":
+                    # Add program change message at the start of the track
+                    # Get the program number for this instrument
+                    program_num = INSTRUMENT_PROGRAMS.get(track.instrument.lower(), 0)
+
+                    # Special handling for drums - use channel 9
+                    if track.instrument.lower() == "drums":
+                        track.channel = 9
+                    else:
                         midi_track.append(
                             mido.Message(
-                                "note_on",
-                                note=event["note"],
-                                velocity=event["velocity"],
-                                time=event.get("time", 0),
+                                "program_change",
+                                program=program_num,
+                                channel=track.channel,
+                                time=0,
                             )
                         )
 
-            # Save the MIDI file
-            mid.save(path)
-            return True
+                    # Group events by time
+                    events_by_time: Dict[int, List[Dict[str, Any]]] = {}
+                    for event in track.events:
+                        if isinstance(event, dict):
+                            event_type = safe_get(event, "type")
+                            if event_type == "note":
+                                time = safe_get(event, "time", 0)
+                                if time not in events_by_time:
+                                    events_by_time[time] = []
+                                events_by_time[time].append(event)
 
-    def export_audio(self, path: str, format: str) -> bool:
-        """Render the composition to audio using FluidSynth"""
+                    # Sort times and process events
+                    for time in sorted(events_by_time.keys()):
+                        # Add all note_on messages for this time
+                        for event in events_by_time[time]:
+                            note = safe_get(event, "note", 60)
+                            velocity = safe_get(event, "velocity", 64)
+                            duration = safe_get(event, "duration", MIDI_TICKS_PER_BEAT)
+
+                            # Note on event
+                            midi_track.append(
+                                mido.Message(
+                                    "note_on",
+                                    note=note,
+                                    velocity=velocity,
+                                    time=0,  # Time is handled by the event grouping
+                                    channel=track.channel,
+                                )
+                            )
+                            # Note off event
+                            midi_track.append(
+                                mido.Message(
+                                    "note_off",
+                                    note=note,
+                                    velocity=0,
+                                    time=duration,
+                                    channel=track.channel,
+                                )
+                            )
+
+                # Save the MIDI file
+                mid.save(path)
+                return {"success": True}
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+
+    def export_audio(self, path: str, format: str) -> Dict[str, Any]:
+        """Render the composition to audio using FluidSynth.
+
+        Args:
+            path: Path to save the audio file
+            format: Audio format (currently only 'wav' is supported)
+
+        Returns:
+            Dict containing success status and error message if failed
+        """
         if not self.current_project:
-            return False
+            return {"success": False, "error": "No project is currently loaded"}
 
         if not FLUIDSYNTH_AVAILABLE:
-            return False
+            return {"success": False, "error": "FluidSynth is not available"}
 
         try:
             # First export to MIDI
             midi_path = path.replace(f".{format}", ".mid")
-            if not self.export_midi(midi_path):
-                return False
+            midi_result = self.export_midi(midi_path)
+            if not midi_result["success"]:
+                return midi_result
 
             # Use FluidSynth to convert MIDI to WAV
             if format.lower() == "wav":
@@ -470,13 +703,16 @@ class MidiCompositionServer:
                     midi_path,
                 ]
                 result = subprocess.run(cmd, capture_output=True, text=True)
-                if result.returncode != 0:
-                    return False
                 os.remove(midi_path)
-                return True
-            return False
-        except:
-            return False
+                if result.returncode != 0:
+                    return {
+                        "success": False,
+                        "error": f"FluidSynth error: {result.stderr}",
+                    }
+                return {"success": True}
+            return {"success": False, "error": f"Unsupported format: {format}"}
+        except Exception as e:
+            return {"success": False, "error": str(e)}
 
     def start_midi_server(self, port: int) -> None:
         """Start a server that listens for MIDI events"""
@@ -646,61 +882,61 @@ class MidiCompositionServer:
         self.soundfont_manager.cleanup()
 
     def add_notes(self, track_name: str, notes: List[Dict[str, int]]) -> Dict[str, Any]:
-        """Add multiple note events to a track.
+        """Add notes to a track.
 
         Args:
             track_name: Name of the track to add notes to
-            notes: List of note events, each containing:
-                - note: MIDI note number (0-127)
-                - velocity: Note velocity (0-127)
-                - time: Time in ticks
+            notes: List of note events with note, velocity, time, and duration
 
         Returns:
-            Dict with success status and error message if failed
+            Dict containing success status and error message if failed
         """
-        try:
-            with self.state_lock:
-                if not self.current_project:
-                    return {"success": False, "error": "No project is currently loaded"}
+        if not self.current_project:
+            return {"success": False, "error": "No project is currently loaded"}
 
-                if track_name not in self.current_project.tracks:
+        if track_name not in self.current_project.tracks:
+            return {"success": False, "error": f"Track '{track_name}' not found"}
+
+        try:
+            track = self.current_project.tracks[track_name]
+            for note in notes:
+                # Check required fields
+                if "note" not in note or "velocity" not in note:
                     return {
                         "success": False,
-                        "error": f"Track '{track_name}' not found",
+                        "error": "Note events must have 'note' and 'velocity' fields",
                     }
 
-                # Validate notes
-                for note in notes:
-                    if not isinstance(note, dict):
-                        return {
-                            "success": False,
-                            "error": "Each note must be a dictionary",
-                        }
-                    if "note" not in note or "velocity" not in note:
-                        return {
-                            "success": False,
-                            "error": "Each note must have 'note' and 'velocity' fields",
-                        }
-                    if not (0 <= note["note"] <= 127 and 0 <= note["velocity"] <= 127):
-                        return {
-                            "success": False,
-                            "error": "Note and velocity must be between 0 and 127",
-                        }
+                # Validate MIDI note values
+                note_value = note.get("note", 60)
+                velocity = note.get("velocity", 64)
 
-                # Add all notes to the track
-                track = self.current_project.tracks[track_name]
-                for note in notes:
-                    event = {
-                        "type": "note",
-                        "note": note["note"],
-                        "velocity": note["velocity"],
-                        "time": note.get("time", 0),
+                if not (0 <= note_value <= 127):
+                    return {
+                        "success": False,
+                        "error": f"Note value {note_value} must be between 0 and 127",
                     }
-                    track.events.append(event)
+                if not (0 <= velocity <= 127):
+                    return {
+                        "success": False,
+                        "error": f"Velocity value {velocity} must be between 0 and 127",
+                    }
 
-                self._save_state()
-                return {"success": True}
+                # Create a properly typed NoteEvent
+                event: NoteEvent = {
+                    "type": "note",
+                    "note": note_value,
+                    "velocity": velocity,
+                }
+                if "time" in note:
+                    event["time"] = note["time"]
+                if "duration" in note:
+                    event["duration"] = note["duration"]
 
+                track.events.append(event)
+
+            self._save_state()
+            return {"success": True}
         except Exception as e:
             return {"success": False, "error": str(e)}
 
@@ -723,3 +959,20 @@ class MidiCompositionServer:
     def download_soundfont(self, search_term: str) -> Dict[str, Any]:
         """Download a soundfont by name."""
         return self.soundfont_manager.download_soundfont(search_term)
+
+    def get_midi_settings(self) -> Dict[str, Any]:
+        """Get MIDI settings and constants.
+
+        Returns:
+            Dict containing MIDI settings including ticks per beat
+        """
+        return {
+            "success": True,
+            "data": {
+                "ticks_per_beat": MIDI_TICKS_PER_BEAT,
+                "max_note_value": 127,
+                "max_velocity": 127,
+                "max_channel": 15,
+                "drum_channel": 9,
+            },
+        }

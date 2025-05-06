@@ -49,10 +49,16 @@ class SoundfontManager:
 
             # Search through all soundfonts
             matches = []
-            for soundfont in sources["soundfonts"]:
+            for name, url in sources.items():
                 # Check if search term matches (case-insensitive)
-                if search_term.lower() in soundfont["name"].lower():
-                    matches.append(soundfont)
+                if search_term.lower() in name.lower():
+                    matches.append(
+                        {
+                            "name": name.capitalize(),
+                            "url": url,
+                            "category": name.capitalize(),
+                        }
+                    )
 
             if matches:
                 return {

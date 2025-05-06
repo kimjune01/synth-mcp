@@ -1,19 +1,15 @@
 {
-  "soundfonts": [
-    {
-      "name": "Piano",
-      "category": "Piano",
-      "url": "https://example.com/piano.sf2"
-    },
-    {
-      "name": "Guitar",
-      "category": "Guitar",
-      "url": "https://example.com/guitar.sf2"
-    },
-    {
-      "name": "Strings",
-      "category": "Strings",
-      "url": "https://example.com/strings.sf2"
-    }
-  ]
+  "piano": "https://zanderjaz.com/soundfonts/pianos/Piano.SF2",
+  "strings": "https://www.zanderjaz.com/soundfonts/strings/String%20sect.sf2",
+  "bass": "https://www.zanderjaz.com/soundfonts/guitars/Bass%20Guitars.sf2",
+  "brass": "https://www.zanderjaz.com/soundfonts/brass/5_Brass_Lead.sf2",
+  "choir": "https://www.zanderjaz.com/soundfonts/choirs/SimpleVoiceSynth.sf2",
+  "synth": "https://zanderjaz.com/soundfonts/synths/HS%20Synthetic%20Electronic.sf2",
+  "organ": "https://www.zanderjaz.com/soundfonts/organs/suspstrgs.sf2",
+  "drums": "https://www.zanderjaz.com/soundfonts/drums/HS%20Linn%20Drums.sf2",
+  "flute": "https://www.zanderjaz.com/soundfonts/flutes/Mell%20Flutes.sf2",
+  "fx": "https://www.zanderjaz.com/soundfonts/fx/1115_SynthSweepFX.sf2",
+  "pads": "https://www.zanderjaz.com/soundfonts/packs/HS%20Pads%20and%20Textures%20I.sf2",
+  "glockenspiel": "https://www.zanderjaz.com/soundfonts/st-james-orchestra/SJO%20-%20Glockenspiel.sf2",
+  "trumpet": "https://www.zanderjaz.com/soundfonts/planet-phatt-hip-hop/Tpt%20FX%203.sf2"
 }

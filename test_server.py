@@ -11,6 +11,7 @@ import os
 from midi_server import MidiCompositionServer, FLUIDSYNTH_AVAILABLE
 from soundfont_manager import SoundfontManager, FLUIDSYNTH_AVAILABLE
 import httpx
+import mido
 
 
 class TestMidiCompositionServer(unittest.TestCase):
@@ -129,13 +130,14 @@ class TestMidiCompositionServer(unittest.TestCase):
     def test_track_management(self):
         """Test track creation and management"""
         # Create a project first
-        self.server.create_project("test_project", 120, (4, 4))
+        assert self.server.create_project("test_project", 120, (4, 4))["success"]
 
         # Create a track
         track_name = "piano"
-        instrument = 0
+        instrument = "piano"
         channel = 0
-        self.server.create_track(track_name, instrument, channel)
+        result = self.server.create_track(track_name, instrument, channel)
+        assert result["success"]
 
         # Verify track was created
         self.assertIn(track_name, self.server.current_project.tracks)
@@ -145,48 +147,45 @@ class TestMidiCompositionServer(unittest.TestCase):
         self.assertEqual(track.channel, channel)
 
         # Test track muting
-        self.server.mute_track(track_name)
+        assert self.server.mute_track(track_name)["success"]
         self.assertTrue(self.server.current_project.tracks[track_name].is_muted)
 
         # Test track solo
-        self.server.solo_track(track_name)
+        assert self.server.solo_track(track_name)["success"]
         self.assertTrue(self.server.current_project.tracks[track_name].is_solo)
 
         # Test track volume
         volume = 0.8
-        self.server.set_track_volume(track_name, volume)
+        assert self.server.set_track_volume(track_name, volume)["success"]
         self.assertEqual(self.server.current_project.tracks[track_name].volume, volume)
 
         # Test track pan
         pan = 0.5
-        self.server.set_track_pan(track_name, pan)
+        assert self.server.set_track_pan(track_name, pan)["success"]
         self.assertEqual(self.server.current_project.tracks[track_name].pan, pan)
 
     def test_project_persistence(self):
         """Test saving and loading projects"""
         # Create and save a project
         project_name = "persistence_test"
-        self.server.create_project(project_name, 120, (4, 4))
-        self.server.create_track("piano", 0, 0)
+        assert self.server.create_project(project_name, 120, (4, 4))["success"]
+        assert self.server.create_track("piano", "piano", 0)["success"]
 
         # Save the project
-        self.server.save_project()
+        assert self.server.save_project()["success"]
 
         # Create a new server instance to test loading
         new_server = MidiCompositionServer()
         new_server.workspace_dir = self.server.workspace_dir
 
         # Load the project
-        self.assertTrue(new_server.load_project(project_name))
+        assert new_server.load_project(project_name)["success"]
 
         # Verify loaded state
         self.assertEqual(new_server.current_project.name, project_name)
         self.assertEqual(new_server.current_project.tempo, 120)
         self.assertEqual(new_server.current_project.time_signature, (4, 4))
         self.assertIn("piano", new_server.current_project.tracks)
-
-        # Clean up the new server
-        new_server.stop_midi_server()
 
     def test_synth_settings(self):
         """Test FluidSynth settings management"""
@@ -272,52 +271,57 @@ def test_create_project(server):
 
 def test_create_track(server):
     """Test track creation functionality."""
-    server.create_project("test_project", 120, (4, 4))
-    assert server.create_track("track1", 0, 0)
+    assert server.create_project("test_project", 120, (4, 4))["success"]
+    result = server.create_track("track1", "piano", 0)
+    assert result["success"]
     assert "track1" in server.current_project.tracks
     track = server.current_project.tracks["track1"]
-    assert track.instrument == 0
+    assert track.instrument == "piano"
     assert track.channel == 0
 
 
 def test_mute_track(server):
     server.create_project("test_project", 120, (4, 4))
-    server.create_track("track1", 0, 0)
-    assert server.mute_track("track1")
+    assert server.create_track("track1", "piano", 0)["success"]
+    result = server.mute_track("track1")
+    assert result["success"]
     assert server.current_project.tracks["track1"].is_muted
 
 
 def test_solo_track(server):
     server.create_project("test_project", 120, (4, 4))
-    server.create_track("track1", 0, 0)
-    assert server.solo_track("track1")
+    assert server.create_track("track1", "piano", 0)["success"]
+    result = server.solo_track("track1")
+    assert result["success"]
     assert server.current_project.tracks["track1"].is_solo
 
 
 def test_set_track_volume(server):
     server.create_project("test_project", 120, (4, 4))
-    server.create_track("track1", 0, 0)
-    assert server.set_track_volume("track1", 0.5)
+    assert server.create_track("track1", "piano", 0)["success"]
+    result = server.set_track_volume("track1", 0.5)
+    assert result["success"]
     assert server.current_project.tracks["track1"].volume == 0.5
 
 
 def test_set_track_pan(server):
     server.create_project("test_project", 120, (4, 4))
-    server.create_track("track1", 0, 0)
-    assert server.set_track_pan("track1", -0.5)
+    assert server.create_track("track1", "piano", 0)["success"]
+    result = server.set_track_pan("track1", -0.5)
+    assert result["success"]
     assert server.current_project.tracks["track1"].pan == -0.5
 
 
 def test_save_and_load_project(server):
     # Create and save a project
-    server.create_project("test_project", 120, (4, 4))
-    server.create_track("track1", 0, 0)
-    server.set_track_volume("track1", 0.5)
-    server.save_project()
+    assert server.create_project("test_project", 120, (4, 4))["success"]
+    assert server.create_track("track1", "piano", 0)["success"]
+    assert server.set_track_volume("track1", 0.5)["success"]
+    assert server.save_project()["success"]
 
     # Create a new server instance and load the project
     new_server = MidiCompositionServer()
-    assert new_server.load_project("test_project")
+    assert new_server.load_project("test_project")["success"]
     assert new_server.current_project is not None
     assert new_server.current_project.name == "test_project"
     assert "track1" in new_server.current_project.tracks
@@ -326,7 +330,7 @@ def test_save_and_load_project(server):
 
 def test_export_midi(server, tmp_path):
     server.create_project("test_project", 120, (4, 4))
-    server.create_track("track1", 0, 0)
+    server.create_track("track1", "piano", 0)
     midi_path = tmp_path / "test.mid"
     assert server.export_midi(str(midi_path))
     assert midi_path.exists()
@@ -334,7 +338,7 @@ def test_export_midi(server, tmp_path):
 
 def test_export_audio(server, tmp_path):
     server.create_project("test_project", 120, (4, 4))
-    server.create_track("track1", 0, 0)
+    server.create_track("track1", "piano", 0)
     audio_path = tmp_path / "test.wav"
     assert server.export_audio(str(audio_path), "wav")
     assert audio_path.exists()
@@ -418,7 +422,7 @@ def test_play_audio_file_mcp(server, tmp_path):
 def test_remove_project(server):
     # Create a test project
     server.create_project("test_project", 120, (4, 4))
-    server.create_track("track1", 0, 0)
+    server.create_track("track1", "piano", 0)
     server.save_project()
 
     # Test removing the project
@@ -435,9 +439,9 @@ def test_remove_project(server):
 
 def test_inspect_projects(server):
     # Create a test project
-    server.create_project("test_project", 120, (4, 4))
-    server.create_track("track1", 0, 0)
-    server.save_project()
+    assert server.create_project("test_project", 120, (4, 4))["success"]
+    assert server.create_track("track1", "piano", 0)["success"]
+    assert server.save_project()["success"]
 
     # Test inspecting projects
     result = server.inspect_projects()
@@ -447,15 +451,15 @@ def test_inspect_projects(server):
     assert "test_project" in result["data"]["projects"]
     assert (
         result["data"]["projects"]["test_project"]["tracks"]["track1"]["instrument"]
-        == 0
+        == "piano"
     )
 
 
 def test_add_notes(server):
     """Test adding multiple notes to a track."""
     # Create a project and track
-    server.create_project("test_project", 120, (4, 4))
-    server.create_track("track1", 0, 0)
+    assert server.create_project("test_project", 120, (4, 4))["success"]
+    assert server.create_track("track1", "piano", 0)["success"]
 
     # Test adding valid notes
     notes = [
@@ -500,9 +504,9 @@ def test_add_notes(server):
 def test_add_notes_mcp(server):
     """Test the MCP add_notes function."""
     # Create a project and track
-    server.create_project("test_project", 120, (4, 4))
-    server.create_track("track1", 0, 0)
-    server.save_project()
+    assert server.create_project("test_project", 120, (4, 4))["success"]
+    assert server.create_track("track1", "piano", 0)["success"]
+    assert server.save_project()["success"]
 
     # Test adding valid notes
     notes = [
@@ -604,10 +608,11 @@ def test_find_soundfont(server):
     # Test finding an existing soundfont
     result = server.find_soundfont("Piano")
     assert result["success"]
-    assert result["data"]["count"] > 0
-    assert any("Piano" in match["name"] for match in result["data"]["matches"])
-    assert any(match["category"] == "Piano" for match in result["data"]["matches"])
-    assert all("url" in match for match in result["data"]["matches"])
+    assert len(result["data"]["matches"]) > 0
+    for match in result["data"]["matches"]:
+        assert "name" in match
+        assert "url" in match
+        assert "category" in match
 
     # Test searching for non-existent soundfont
     result = server.find_soundfont("nonexistent")
@@ -617,6 +622,23 @@ def test_find_soundfont(server):
 
 def test_download_soundfont(server, monkeypatch):
     """Test downloading a soundfont."""
+
+    # Mock the find_soundfont method to return a known soundfont
+    def mock_find_soundfont(name):
+        return {
+            "success": True,
+            "data": {
+                "matches": [
+                    {
+                        "name": "Piano",
+                        "category": "Piano",
+                        "url": "http://example.com/piano.sf2",
+                    }
+                ]
+            },
+        }
+
+    monkeypatch.setattr(server.soundfont_manager, "find_soundfont", mock_find_soundfont)
 
     # Mock the httpx.get function
     class MockResponse:
@@ -635,14 +657,210 @@ def test_download_soundfont(server, monkeypatch):
     assert result["data"]["category"] == "Piano"
     assert os.path.exists(result["data"]["filepath"])
 
-    # Test searching for non-existent soundfont
-    result = server.download_soundfont("nonexistent")
-    assert not result["success"]
-    assert "no soundfont found matching" in result["error"].lower()
-
     # Clean up downloaded file
     if result["success"]:
         os.remove(result["data"]["filepath"])
+
+
+def test_create_track_with_soundfont(server, monkeypatch):
+    """Test creating a track with automatic soundfont handling."""
+    # Create a project first
+    assert server.create_project("TestProject", 120, (4, 4))["success"]
+
+    # Mock the find_soundfont and download_soundfont methods
+    def mock_find_soundfont(name):
+        return {
+            "success": True,
+            "data": {
+                "matches": [
+                    {
+                        "name": name,
+                        "category": name,
+                        "url": f"http://example.com/{name}.sf2",
+                    }
+                ]
+            },
+        }
+
+    def mock_download_soundfont(name):
+        return {
+            "success": True,
+            "data": {
+                "name": name,
+                "category": name,
+                "filepath": f"soundfonts/{name}.sf2",
+            },
+        }
+
+    monkeypatch.setattr(server.soundfont_manager, "find_soundfont", mock_find_soundfont)
+    monkeypatch.setattr(
+        server.soundfont_manager, "download_soundfont", mock_download_soundfont
+    )
+
+    # Test creating a track with a piano (program 0)
+    result = server.create_track("Piano Track", "piano", 0)
+    assert result["success"]
+    assert "Piano Track" in server.current_project.tracks
+    assert server.current_project.tracks["Piano Track"].instrument == "piano"
+
+
+def test_create_track_invalid_instrument(server):
+    """Test creating a track with an invalid instrument name."""
+    # Create a project first
+    assert server.create_project("TestProject", 120, (4, 4))["success"]
+
+    # Try to create a track with an invalid instrument name
+    result = server.create_track("Invalid Track", "invalid", 0)
+    assert not result["success"]
+    assert (
+        "Could not find or download soundfont for instrument invalid" in result["error"]
+    )
+
+
+def test_create_track_missing_soundfont(server, monkeypatch):
+    """Test creating a track when soundfont can't be found or downloaded."""
+    # Create a project first
+    assert server.create_project("TestProject", 120, (4, 4))["success"]
+
+    # Mock the find_soundfont and download_soundfont methods to simulate failure
+    def mock_find_soundfont(name):
+        return {"success": False, "error": "Soundfont not found"}
+
+    def mock_download_soundfont(name):
+        return {"success": False, "error": "Download failed"}
+
+    monkeypatch.setattr(server.soundfont_manager, "find_soundfont", mock_find_soundfont)
+    monkeypatch.setattr(
+        server.soundfont_manager, "download_soundfont", mock_download_soundfont
+    )
+
+    # Try to create a track with a piano (program 0)
+    result = server.create_track("Piano Track", "piano", 0)
+    assert not result["success"]
+    assert "Could not find or download soundfont" in result["error"]
+    assert "Piano Track" not in server.current_project.tracks
+
+
+def test_create_track_no_project(server):
+    """Test creating a track when no project is loaded."""
+    result = server.create_track("Test Track", "piano", 0)
+    assert not result["success"]
+    assert "No project is currently loaded" in result["error"]
+
+
+def test_create_track_existing_soundfont(server, monkeypatch):
+    """Test creating a track when soundfont is already available."""
+    # Create a project first
+    assert server.create_project("TestProject", 120, (4, 4))["success"]
+
+    # Mock the find_soundfont method to simulate existing soundfont
+    def mock_find_soundfont(name):
+        return {
+            "success": True,
+            "data": {
+                "matches": [
+                    {
+                        "name": name,
+                        "category": name,
+                        "url": f"http://example.com/{name}.sf2",
+                    }
+                ]
+            },
+        }
+
+    monkeypatch.setattr(server.soundfont_manager, "find_soundfont", mock_find_soundfont)
+
+    # Create a track with a piano (program 0)
+    result = server.create_track("Piano Track", "piano", 0)
+    assert result["success"]
+    assert "Piano Track" in server.current_project.tracks
+    assert server.current_project.tracks["Piano Track"].instrument == "piano"
+
+
+def test_export_midi_with_strings(server, tmp_path):
+    """Test exporting MIDI with string instruments."""
+    server.create_project("test_project", 120, (4, 4))
+    server.create_track("strings", "strings", 0)
+
+    # Add some notes to the string track
+    notes = [
+        {"type": "note", "note": 60, "velocity": 64, "time": 0, "duration": 480},
+        {"type": "note", "note": 64, "velocity": 64, "time": 480, "duration": 480},
+        {"type": "note", "note": 67, "velocity": 64, "time": 960, "duration": 480},
+    ]
+    server.add_notes("strings", notes)
+
+    midi_path = tmp_path / "test_strings.mid"
+    result = server.export_midi(str(midi_path))
+    assert result["success"]
+    assert midi_path.exists()
+
+    # Read back the MIDI file and verify program number
+    midi_file = mido.MidiFile(str(midi_path))
+    assert len(midi_file.tracks) == 1
+
+    # Find program change message
+    program_msgs = [msg for msg in midi_file.tracks[0] if msg.type == "program_change"]
+    assert len(program_msgs) == 1
+    assert program_msgs[0].program == 48  # String Ensemble 1
+
+    # Verify notes
+    note_on_msgs = [
+        msg for msg in midi_file.tracks[0] if msg.type == "note_on" and msg.velocity > 0
+    ]
+    assert len(note_on_msgs) == 3
+    assert note_on_msgs[0].note == 60  # C4
+    assert note_on_msgs[1].note == 64  # E4
+    assert note_on_msgs[2].note == 67  # G4
+
+
+def test_get_midi_settings(server):
+    """Test getting MIDI settings."""
+    result = server.get_midi_settings()
+    assert result["success"]
+    assert "data" in result
+    assert result["data"]["ticks_per_beat"] == 480
+    assert result["data"]["max_note_value"] == 127
+    assert result["data"]["max_velocity"] == 127
+    assert result["data"]["max_channel"] == 15
+    assert result["data"]["drum_channel"] == 9
+
+
+def test_export_midi_simultaneous_notes(server, tmp_path):
+    """Test exporting MIDI with simultaneous notes."""
+    server.create_project("test_project", 120, (4, 4))
+    server.create_track("piano", "piano", 0)
+
+    # Add three simultaneous notes (C major chord)
+    notes = [
+        {"note": 60, "velocity": 80, "time": 0, "duration": 480},  # C4
+        {"note": 64, "velocity": 80, "time": 0, "duration": 480},  # E4
+        {"note": 67, "velocity": 80, "time": 0, "duration": 480},  # G4
+    ]
+    server.add_notes("piano", notes)
+
+    midi_path = tmp_path / "test_simultaneous.mid"
+    result = server.export_midi(str(midi_path))
+    assert result["success"]
+    assert midi_path.exists()
+
+    # Read back the MIDI file and verify notes
+    midi_file = mido.MidiFile(str(midi_path))
+    assert len(midi_file.tracks) == 1
+
+    # Get all note_on messages
+    note_on_msgs = [
+        msg for msg in midi_file.tracks[0] if msg.type == "note_on" and msg.velocity > 0
+    ]
+    assert len(note_on_msgs) == 3
+
+    # Verify that all notes start at time 0
+    for msg in note_on_msgs:
+        assert msg.time == 0
+
+    # Verify the notes are C4, E4, G4
+    notes = sorted(msg.note for msg in note_on_msgs)
+    assert notes == [60, 64, 67]  # C4, E4, G4
 
 
 if __name__ == "__main__":

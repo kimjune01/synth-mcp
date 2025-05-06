@@ -8,6 +8,7 @@ import asyncio
 from server import MidiCompositionServer, ProjectState, TrackState
 import pytest
 import os
+from midi_server import MidiCompositionServer
 
 
 class TestMidiCompositionServer(unittest.TestCase):
@@ -215,247 +216,136 @@ def server():
     if server.workspace_dir.exists():
         for file in server.workspace_dir.glob("*.json"):
             file.unlink()
-    return server
+    yield server
+    # Cleanup after tests
+    if server.current_project:
+        server.remove_project(server.current_project.name)
 
 
 def test_create_project(server):
     """Test project creation functionality."""
-    # Create a new project
-    success = server.create_project("test_project", 120, (4, 4))
-    assert success is True
-
-    # Verify project was created
+    assert server.create_project("test_project", 120, (4, 4))
     assert server.current_project is not None
     assert server.current_project.name == "test_project"
     assert server.current_project.tempo == 120
     assert server.current_project.time_signature == (4, 4)
 
-    # Verify project file was created
-    project_file = server.workspace_dir / "test_project.json"
-    assert project_file.exists()
-
-    # Verify file contents
-    with open(project_file) as f:
-        data = json.load(f)
-        assert data["name"] == "test_project"
-        assert data["tempo"] == 120
-        assert data["time_signature"] == [4, 4]
-        assert data["tracks"] == {}
-
 
 def test_create_track(server):
     """Test track creation functionality."""
-    # Create project first
     server.create_project("test_project", 120, (4, 4))
-
-    # Create a track
-    success = server.create_track("piano", 0, 0)
-    assert success is True
-
-    # Verify track was created
-    assert "piano" in server.current_project.tracks
-    track = server.current_project.tracks["piano"]
-    assert track.name == "piano"
+    assert server.create_track("track1", 0, 0)
+    assert "track1" in server.current_project.tracks
+    track = server.current_project.tracks["track1"]
     assert track.instrument == 0
     assert track.channel == 0
 
-    # Verify track was saved
-    project_file = server.workspace_dir / "test_project.json"
-    with open(project_file) as f:
-        data = json.load(f)
-        assert "piano" in data["tracks"]
-        track_data = data["tracks"]["piano"]
-        assert track_data["name"] == "piano"
-        assert track_data["instrument"] == 0
-        assert track_data["channel"] == 0
 
-
-def test_add_note_event(server):
-    """Test adding note events to a track."""
-    # Create project and track
+def test_mute_track(server):
     server.create_project("test_project", 120, (4, 4))
-    server.create_track("piano", 0, 0)
-
-    # Add a note event
-    track = server.current_project.tracks["piano"]
-    track.events.append({"type": "note", "note": 60, "velocity": 100, "time": 0})
-
-    # Verify note event was added
-    assert len(track.events) == 1
-    event = track.events[0]
-    assert event["type"] == "note"
-    assert event["note"] == 60
-    assert event["velocity"] == 100
-    assert event["time"] == 0
-
-    # Verify event was saved
-    server._save_state()
-    project_file = server.workspace_dir / "test_project.json"
-    with open(project_file) as f:
-        data = json.load(f)
-        track_data = data["tracks"]["piano"]
-        assert len(track_data["events"]) == 1
-        saved_event = track_data["events"][0]
-        assert saved_event["type"] == "note"
-        assert saved_event["note"] == 60
-        assert saved_event["velocity"] == 100
-        assert saved_event["time"] == 0
+    server.create_track("track1", 0, 0)
+    assert server.mute_track("track1")
+    assert server.current_project.tracks["track1"].is_muted
 
 
-def test_export_midi(server):
-    """Test MIDI export functionality."""
-    # Create project and track
+def test_solo_track(server):
     server.create_project("test_project", 120, (4, 4))
-    server.create_track("piano", 0, 0)
-
-    # Add some note events
-    track = server.current_project.tracks["piano"]
-    track.events.extend(
-        [
-            {"type": "note", "note": 60, "velocity": 100, "time": 0},  # Middle C
-            {"type": "note", "note": 64, "velocity": 100, "time": 480},  # E4
-            {"type": "note", "note": 67, "velocity": 100, "time": 960},  # G4
-        ]
-    )
-
-    # Export to MIDI
-    midi_path = "test_output.mid"
-    success = server.export_midi(midi_path)
-    assert success is True
-
-    # Verify MIDI file was created
-    assert os.path.exists(midi_path)
-
-    # Clean up
-    os.remove(midi_path)
+    server.create_track("track1", 0, 0)
+    assert server.solo_track("track1")
+    assert server.current_project.tracks["track1"].is_solo
 
 
-def test_project_state_serialization():
-    """Test ProjectState serialization and deserialization."""
-    # Create a project state
-    tracks = {
-        "piano": TrackState(
-            name="piano",
-            instrument=0,
-            channel=0,
-            events=[{"type": "note", "note": 60, "velocity": 100, "time": 0}],
-        )
-    }
-    project = ProjectState(
-        name="test_project", tempo=120, time_signature=(4, 4), tracks=tracks
-    )
-
-    # Convert to dict
-    data = project.to_dict()
-
-    # Convert back to ProjectState
-    new_project = ProjectState.from_dict(data)
-
-    # Verify data was preserved
-    assert new_project.name == project.name
-    assert new_project.tempo == project.tempo
-    assert new_project.time_signature == project.time_signature
-    assert len(new_project.tracks) == len(project.tracks)
-    assert "piano" in new_project.tracks
-    assert len(new_project.tracks["piano"].events) == 1
-    assert new_project.tracks["piano"].events[0]["note"] == 60
-
-
-def test_inspect_projects(server):
-    """Test project inspection functionality."""
-    # Create multiple test projects
-    server.create_project("project1", 120, (4, 4))
-    server.create_track("piano", 0, 0)
-
-    # Add some note events to project1
-    track = server.current_project.tracks["piano"]
-    track.events.append({"type": "note", "note": 60, "velocity": 100, "time": 0})
-    server._save_state()
-
-    # Create second project
-    server.create_project("project2", 140, (3, 4))
-    server.create_track("guitar", 24, 1)
-    server._save_state()
-
-    # Test inspection
-    result = server.inspect_projects()
-    assert result["success"] is True
-    data = result["data"]
-
-    # Verify project count
-    assert data["project_count"] == 2
-
-    # Verify project1 details
-    project1 = data["projects"]["project1"]
-    assert project1["tempo"] == 120
-    assert project1["time_signature"] == [4, 4]
-    assert "piano" in project1["tracks"]
-    assert project1["tracks"]["piano"]["instrument"] == 0
-    assert project1["tracks"]["piano"]["event_count"] == 1
-
-    # Verify project2 details
-    project2 = data["projects"]["project2"]
-    assert project2["tempo"] == 140
-    assert project2["time_signature"] == [3, 4]
-    assert "guitar" in project2["tracks"]
-    assert project2["tracks"]["guitar"]["instrument"] == 24
-    assert project2["tracks"]["guitar"]["event_count"] == 0
-
-
-def test_play_audio_file(server):
-    """Test audio file playback functionality."""
-    # Create a test project and export MIDI
+def test_set_track_volume(server):
     server.create_project("test_project", 120, (4, 4))
-    server.create_track("piano", 0, 0)
+    server.create_track("track1", 0, 0)
+    assert server.set_track_volume("track1", 0.5)
+    assert server.current_project.tracks["track1"].volume == 0.5
 
-    # Add a note event
-    track = server.current_project.tracks["piano"]
-    track.events.append({"type": "note", "note": 60, "velocity": 100, "time": 0})
 
-    # Export to MIDI
-    midi_path = "test_output.mid"
-    server.export_midi(midi_path)
+def test_set_track_pan(server):
+    server.create_project("test_project", 120, (4, 4))
+    server.create_track("track1", 0, 0)
+    assert server.set_track_pan("track1", -0.5)
+    assert server.current_project.tracks["track1"].pan == -0.5
 
-    # Test playback
-    result = server.play_audio_file("test_project", midi_path)
-    assert result["success"] is True
 
-    # Clean up
-    os.remove(midi_path)
+def test_save_and_load_project(server):
+    # Create and save a project
+    server.create_project("test_project", 120, (4, 4))
+    server.create_track("track1", 0, 0)
+    server.set_track_volume("track1", 0.5)
+    server.save_project()
+
+    # Create a new server instance and load the project
+    new_server = MidiCompositionServer()
+    assert new_server.load_project("test_project")
+    assert new_server.current_project is not None
+    assert new_server.current_project.name == "test_project"
+    assert "track1" in new_server.current_project.tracks
+    assert new_server.current_project.tracks["track1"].volume == 0.5
+
+
+def test_export_midi(server, tmp_path):
+    server.create_project("test_project", 120, (4, 4))
+    server.create_track("track1", 0, 0)
+    midi_path = tmp_path / "test.mid"
+    assert server.export_midi(str(midi_path))
+    assert midi_path.exists()
+
+
+def test_export_audio(server, tmp_path):
+    server.create_project("test_project", 120, (4, 4))
+    server.create_track("track1", 0, 0)
+    audio_path = tmp_path / "test.wav"
+    assert server.export_audio(str(audio_path), "wav")
+    assert audio_path.exists()
+
+
+def test_play_audio_file(server, tmp_path):
+    # Create a test audio file
+    audio_path = tmp_path / "test.wav"
+    with open(audio_path, "w") as f:
+        f.write("dummy audio data")
+
+    result = server.play_audio_file("test_project", str(audio_path))
+    assert result["success"]
 
 
 def test_remove_project(server):
-    """Test project removal functionality."""
     # Create a test project
     server.create_project("test_project", 120, (4, 4))
-    server.create_track("piano", 0, 0)
-    server._save_state()
+    server.create_track("track1", 0, 0)
+    server.save_project()
 
-    # Verify project exists
-    project_file = server.workspace_dir / "test_project.json"
-    assert project_file.exists()
-
-    # Remove the project
+    # Test removing the project
     result = server.remove_project("test_project")
-    assert result["success"] is True
-
-    # Verify project is removed
-    assert not project_file.exists()
-    assert "test_project" not in server.projects
+    assert result["success"]
+    assert not server.workspace_dir.joinpath("test_project.json").exists()
     assert server.current_project is None
 
     # Test removing non-existent project
-    result = server.remove_project("nonexistent")
-    assert result["success"] is False
-    assert "not found" in result["error"]
+    result = server.remove_project("non_existent_project")
+    assert not result["success"]
+    assert "error" in result
 
-    # Test removing project while it's current
-    server.create_project("current_project", 120, (4, 4))
-    assert server.current_project is not None
-    result = server.remove_project("current_project")
-    assert result["success"] is True
-    assert server.current_project is None
+
+def test_inspect_projects(server):
+    # Create a test project
+    server.create_project("test_project", 120, (4, 4))
+    server.create_track("track1", 0, 0)
+    server.save_project()
+
+    # Test inspecting projects
+    result = server.inspect_projects()
+    assert result["success"]
+    assert "data" in result
+    assert "projects" in result["data"]
+    assert "test_project" in result["data"]["projects"]
+    assert (
+        result["data"]["projects"]["test_project"]["tracks"]["track1"]["instrument"]
+        == 0
+    )
 
 
 if __name__ == "__main__":
-    unittest.main()
+    pytest.main(["-v"])

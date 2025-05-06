@@ -8,7 +8,9 @@ import asyncio
 from server import MidiCompositionServer, ProjectState, TrackState
 import pytest
 import os
-from midi_server import MidiCompositionServer
+from midi_server import MidiCompositionServer, FLUIDSYNTH_AVAILABLE
+from soundfont_manager import SoundfontManager, FLUIDSYNTH_AVAILABLE
+import httpx
 
 
 class TestMidiCompositionServer(unittest.TestCase):
@@ -188,24 +190,60 @@ class TestMidiCompositionServer(unittest.TestCase):
 
     def test_synth_settings(self):
         """Test FluidSynth settings management"""
+        # Skip test if FluidSynth is not available
+        if not FLUIDSYNTH_AVAILABLE:
+            pytest.skip("FluidSynth is not available")
+
         # Test gain setting
         gain = 1.0  # Default gain value
-        self.assertEqual(self.server.synth_settings["gain"], gain)
-
-        # Set new gain value
-        new_gain = 0.8
-        self.server.set_gain(new_gain)
-        self.assertEqual(self.server.synth_settings["gain"], new_gain)
+        self.server.soundfont_manager.fs.setting("synth.gain", gain)
+        self.assertEqual(
+            self.server.soundfont_manager.fs.get_setting("synth.gain"), gain
+        )
 
         # Test reverb settings
         reverb_params = {"room_size": 0.5, "damping": 0.2, "width": 0.7, "level": 0.8}
-        self.server.set_reverb(**reverb_params)
-        self.assertEqual(self.server.synth_settings["reverb"], reverb_params)
+        self.server.soundfont_manager.set_reverb(**reverb_params)
+        self.assertEqual(
+            self.server.soundfont_manager.fs.get_reverb_roomsize(),
+            reverb_params["room_size"],
+        )
+        self.assertEqual(
+            self.server.soundfont_manager.fs.get_reverb_damp(), reverb_params["damping"]
+        )
+        self.assertEqual(
+            self.server.soundfont_manager.fs.get_reverb_width(), reverb_params["width"]
+        )
+        self.assertEqual(
+            self.server.soundfont_manager.fs.get_reverb_level(), reverb_params["level"]
+        )
 
         # Test chorus settings
-        chorus_params = {"nr": 4, "level": 1.5, "speed": 0.4, "depth": 10.0, "type": 1}
-        self.server.set_chorus(**chorus_params)
-        self.assertEqual(self.server.synth_settings["chorus"], chorus_params)
+        chorus_params = {"nr": 4, "level": 0.8, "speed": 0.4, "depth": 10.0, "type": 0}
+        self.server.soundfont_manager.set_chorus(**chorus_params)
+        self.assertEqual(
+            self.server.soundfont_manager.fs.get_chorus_nr(), chorus_params["nr"]
+        )
+        self.assertEqual(
+            self.server.soundfont_manager.fs.get_chorus_level(), chorus_params["level"]
+        )
+        self.assertEqual(
+            self.server.soundfont_manager.fs.get_chorus_speed(), chorus_params["speed"]
+        )
+        self.assertEqual(
+            self.server.soundfont_manager.fs.get_chorus_depth(), chorus_params["depth"]
+        )
+        self.assertEqual(
+            self.server.soundfont_manager.fs.get_chorus_type(), chorus_params["type"]
+        )
+
+
+@pytest.fixture
+def soundfont_manager():
+    """Create a fresh soundfont manager for each test."""
+    manager = SoundfontManager()
+    yield manager
+    manager.cleanup()
 
 
 @pytest.fixture
@@ -220,6 +258,7 @@ def server():
     # Cleanup after tests
     if server.current_project:
         server.remove_project(server.current_project.name)
+    server.cleanup()
 
 
 def test_create_project(server):
@@ -304,11 +343,76 @@ def test_export_audio(server, tmp_path):
 def test_play_audio_file(server, tmp_path):
     # Create a test audio file
     audio_path = tmp_path / "test.wav"
-    with open(audio_path, "w") as f:
-        f.write("dummy audio data")
 
-    result = server.play_audio_file("test_project", str(audio_path))
+    # Create a simple WAV file with 1 second of silence
+    import wave
+    import struct
+
+    with wave.open(str(audio_path), "w") as wav_file:
+        # Set parameters
+        nchannels = 1
+        sampwidth = 2
+        framerate = 44100
+        nframes = framerate
+        comptype = "NONE"
+        compname = "not compressed"
+
+        wav_file.setparams(
+            (nchannels, sampwidth, framerate, nframes, comptype, compname)
+        )
+
+        # Write 1 second of silence
+        for _ in range(framerate):
+            value = struct.pack("h", 0)
+            wav_file.writeframes(value)
+
+    # Test playing the audio file
+    result = server.play_audio_file(str(audio_path))
     assert result["success"]
+
+    # Test playing non-existent file
+    result = server.play_audio_file("nonexistent.wav")
+    assert not result["success"]
+    assert "error" in result
+    assert "File not found" in result["error"]
+
+
+def test_play_audio_file_mcp(server, tmp_path):
+    """Test the MCP play_audio_file function."""
+    # Create a test audio file
+    audio_path = tmp_path / "test.wav"
+
+    # Create a simple WAV file with 1 second of silence
+    import wave
+    import struct
+
+    with wave.open(str(audio_path), "w") as wav_file:
+        # Set parameters
+        nchannels = 1
+        sampwidth = 2
+        framerate = 44100
+        nframes = framerate
+        comptype = "NONE"
+        compname = "not compressed"
+
+        wav_file.setparams(
+            (nchannels, sampwidth, framerate, nframes, comptype, compname)
+        )
+
+        # Write 1 second of silence
+        for _ in range(framerate):
+            value = struct.pack("h", 0)
+            wav_file.writeframes(value)
+
+    # Test playing the audio file
+    result = server.play_audio_file(str(audio_path))
+    assert result["success"]
+
+    # Test playing non-existent file
+    result = server.play_audio_file("nonexistent.wav")
+    assert not result["success"]
+    assert "error" in result
+    assert "File not found" in result["error"]
 
 
 def test_remove_project(server):
@@ -347,5 +451,199 @@ def test_inspect_projects(server):
     )
 
 
+def test_add_notes(server):
+    """Test adding multiple notes to a track."""
+    # Create a project and track
+    server.create_project("test_project", 120, (4, 4))
+    server.create_track("track1", 0, 0)
+
+    # Test adding valid notes
+    notes = [
+        {"note": 60, "velocity": 100, "time": 0},  # Middle C
+        {"note": 64, "velocity": 100, "time": 480},  # E
+        {"note": 67, "velocity": 100, "time": 960},  # G
+    ]
+    result = server.add_notes("track1", notes)
+    assert result["success"]
+
+    # Verify notes were added
+    track = server.current_project.tracks["track1"]
+    assert len(track.events) == 3
+    assert track.events[0]["note"] == 60
+    assert track.events[1]["note"] == 64
+    assert track.events[2]["note"] == 67
+
+    # Test invalid note values
+    invalid_notes = [{"note": 128, "velocity": 100}]  # Note > 127
+    result = server.add_notes("track1", invalid_notes)
+    assert not result["success"]
+    assert "must be between 0 and 127" in result["error"]
+
+    # Test invalid velocity values
+    invalid_notes = [{"note": 60, "velocity": 128}]  # Velocity > 127
+    result = server.add_notes("track1", invalid_notes)
+    assert not result["success"]
+    assert "must be between 0 and 127" in result["error"]
+
+    # Test missing required fields
+    invalid_notes = [{"note": 60}]  # Missing velocity
+    result = server.add_notes("track1", invalid_notes)
+    assert not result["success"]
+    assert "must have 'note' and 'velocity' fields" in result["error"]
+
+    # Test non-existent track
+    result = server.add_notes("nonexistent_track", notes)
+    assert not result["success"]
+    assert "not found" in result["error"]
+
+
+def test_add_notes_mcp(server):
+    """Test the MCP add_notes function."""
+    # Create a project and track
+    server.create_project("test_project", 120, (4, 4))
+    server.create_track("track1", 0, 0)
+    server.save_project()
+
+    # Test adding valid notes
+    notes = [
+        {"note": 60, "velocity": 100, "time": 0},
+        {"note": 64, "velocity": 100, "time": 480},
+        {"note": 67, "velocity": 100, "time": 960},
+    ]
+    result = server.add_notes("track1", notes)
+    assert result["success"]
+
+    # Test non-existent project
+    result = server.add_notes("nonexistent_track", notes)
+    assert not result["success"]
+    assert "not found" in result["error"]
+
+
+def test_soundfont_management(soundfont_manager, tmp_path):
+    """Test soundfont management functionality."""
+    # Test with non-existent file
+    result = soundfont_manager.add_soundfont("nonexistent.sf2")
+    assert not result["success"]
+    assert "not found" in result["error"]
+
+    # Test with non-sf2 file
+    invalid_path = tmp_path / "test.txt"
+    with open(invalid_path, "w") as f:
+        f.write("not a soundfont")
+    result = soundfont_manager.add_soundfont(str(invalid_path))
+    assert not result["success"]
+    assert "must be a .sf2 soundfont file" in result["error"]
+
+    # Test with invalid sf2 file
+    invalid_sf2 = tmp_path / "test.sf2"
+    with open(invalid_sf2, "w") as f:
+        f.write("invalid sf2 data")
+    result = soundfont_manager.add_soundfont(str(invalid_sf2))
+    if FLUIDSYNTH_AVAILABLE:
+        assert not result["success"]
+        assert "Failed to load soundfont" in result["error"]
+    else:
+        assert not result["success"]
+        assert "FluidSynth is not available" in result["error"]
+
+    # Test listing soundfonts (should be empty)
+    result = soundfont_manager.list_soundfonts()
+    if FLUIDSYNTH_AVAILABLE:
+        assert result["success"]
+        assert "soundfonts" in result["data"]
+        assert len(result["data"]["soundfonts"]) == 0
+    else:
+        assert not result["success"]
+        assert "FluidSynth is not available" in result["error"]
+
+    # Test removing non-existent soundfont
+    result = soundfont_manager.remove_soundfont(999)
+    assert not result["success"]
+    assert "not found" in result["error"]
+
+
+def test_soundfont_management_mcp(server, tmp_path):
+    """Test the MCP soundfont management functions."""
+    # Test with non-existent file
+    result = server.add_soundfont("nonexistent.sf2")
+    assert not result["success"]
+    assert "not found" in result["error"]
+
+    # Test with invalid sf2 file
+    invalid_sf2 = tmp_path / "test.sf2"
+    with open(invalid_sf2, "w") as f:
+        f.write("invalid sf2 data")
+    result = server.add_soundfont(str(invalid_sf2))
+    if FLUIDSYNTH_AVAILABLE:
+        assert not result["success"]
+        assert "Failed to load soundfont" in result["error"]
+    else:
+        assert not result["success"]
+        assert "FluidSynth is not available" in result["error"]
+
+    # Test listing soundfonts (should be empty)
+    result = server.list_soundfonts()
+    if FLUIDSYNTH_AVAILABLE:
+        assert result["success"]
+        assert "soundfonts" in result["data"]
+        assert len(result["data"]["soundfonts"]) == 0
+    else:
+        assert not result["success"]
+        assert "FluidSynth is not available" in result["error"]
+
+
+def test_remove_soundfont_mcp(server):
+    """Test removing a soundfont using MCP."""
+    result = server.remove_soundfont(1)
+    assert not result["success"]
+    assert "not found" in result["error"].lower()
+
+
+def test_find_soundfont(server):
+    """Test searching for soundfonts without downloading."""
+    # Test finding an existing soundfont
+    result = server.find_soundfont("Piano")
+    assert result["success"]
+    assert result["data"]["count"] > 0
+    assert any("Piano" in match["name"] for match in result["data"]["matches"])
+    assert any(match["category"] == "Piano" for match in result["data"]["matches"])
+    assert all("url" in match for match in result["data"]["matches"])
+
+    # Test searching for non-existent soundfont
+    result = server.find_soundfont("nonexistent")
+    assert not result["success"]
+    assert "no soundfont found matching" in result["error"].lower()
+
+
+def test_download_soundfont(server, monkeypatch):
+    """Test downloading a soundfont."""
+
+    # Mock the httpx.get function
+    class MockResponse:
+        status_code = 200
+        content = b"mock soundfont data"
+
+    def mock_get(url):
+        return MockResponse()
+
+    monkeypatch.setattr(httpx, "get", mock_get)
+
+    # Test downloading a known soundfont
+    result = server.download_soundfont("Piano")
+    assert result["success"]
+    assert "Piano" in result["data"]["name"]
+    assert result["data"]["category"] == "Piano"
+    assert os.path.exists(result["data"]["filepath"])
+
+    # Test searching for non-existent soundfont
+    result = server.download_soundfont("nonexistent")
+    assert not result["success"]
+    assert "no soundfont found matching" in result["error"].lower()
+
+    # Clean up downloaded file
+    if result["success"]:
+        os.remove(result["data"]["filepath"])
+
+
 if __name__ == "__main__":
-    pytest.main(["-v"])
+    pytest.main([__file__])

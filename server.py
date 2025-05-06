@@ -261,6 +261,102 @@ async def inspect_projects() -> Dict[str, Any]:
     return server.inspect_projects()
 
 
+@mcp.tool()
+async def play_audio_file(audio_path: str) -> Dict[str, Any]:
+    """Play a WAV audio file using afplay (macOS audio player).
+
+    Args:
+        audio_path: Path to the WAV file to play.
+
+    Returns:
+        Dict containing success status and error message if failed.
+    """
+    try:
+        # Check if file exists
+        if not os.path.exists(audio_path):
+            return {"success": False, "error": f"File not found: {audio_path}"}
+
+        # Check if file is a WAV file
+        if not audio_path.lower().endswith(".wav"):
+            return {"success": False, "error": "Only WAV files are supported"}
+
+        subprocess.run(["afplay", audio_path], check=True)
+        return {"success": True}
+    except subprocess.CalledProcessError as e:
+        return {"success": False, "error": f"Error playing audio: {str(e)}"}
+    except Exception as e:
+        return {"success": False, "error": f"Unexpected error: {str(e)}"}
+
+
+@mcp.tool()
+async def add_notes(
+    project_name: str, track_name: str, notes: List[Dict[str, int]]
+) -> Dict[str, Any]:
+    """Add multiple note events to a track in the specified project.
+
+    Args:
+        project_name: Name of the project
+        track_name: Name of the track to add notes to
+        notes: List of note events, each containing:
+            - note: MIDI note number (0-127)
+            - velocity: Note velocity (0-127)
+            - time: Time in ticks (optional, defaults to 0)
+
+    Returns:
+        Dict with success status and error message if failed
+    """
+    server = MidiCompositionServer()
+    if server.load_project(project_name):
+        return server.add_notes(track_name, notes)
+    return {"success": False, "error": f"Project '{project_name}' not found"}
+
+
+@mcp.tool()
+async def add_soundfont(soundfont_path: str) -> Dict[str, Any]:
+    """Add a new soundfont to the server.
+
+    Args:
+        soundfont_path: Path to the .sf2 soundfont file
+
+    Returns:
+        Dict with success status and error message if failed
+    """
+    server = MidiCompositionServer()
+    return server.add_soundfont(soundfont_path)
+
+
+@mcp.tool()
+async def list_soundfonts() -> Dict[str, Any]:
+    """List all loaded soundfonts.
+
+    Returns:
+        Dict with success status and list of loaded soundfonts
+    """
+    server = MidiCompositionServer()
+    return server.list_soundfonts()
+
+
+@mcp.tool()
+async def remove_soundfont(soundfont_id: int) -> Dict[str, Any]:
+    """Remove a soundfont from the server."""
+    server = MidiCompositionServer()
+    return server.remove_soundfont(soundfont_id)
+
+
+@mcp.tool()
+async def download_soundfont(search_term: str) -> Dict[str, Any]:
+    """Search for and download a soundfont by name."""
+    server = MidiCompositionServer()
+    return server.download_soundfont(search_term)
+
+
+@mcp.tool()
+async def find_soundfont(search_term: str) -> Dict[str, Any]:
+    """Search for a soundfont by name without downloading it."""
+    server = MidiCompositionServer()
+    return server.find_soundfont(search_term)
+
+
 def main() -> None:
     import threading
     import signal

@@ -8,24 +8,23 @@ from dataclasses import dataclass, asdict, field
 from typing import Dict, List, Optional, Any, Tuple, TypedDict
 import threading
 import mido
+import httpx
+from soundfont_manager import SoundfontManager, FLUIDSYNTH_AVAILABLE
 
 try:
     from pyfluidsynth.fluidsynth import Synth as FluidSynth
 
     logging.info("Successfully imported FluidSynth")
-    FLUIDSYNTH_AVAILABLE = True
 except ImportError as e:
     logging.warning(f"Error importing FluidSynth: {e}")
     logging.warning(
         "FluidSynth features will be disabled. Audio export and real-time playback will not be available."
     )
-    FLUIDSYNTH_AVAILABLE = False
 except Exception as e:
     logging.error(f"Unexpected error importing FluidSynth: {e}")
     logging.warning(
         "FluidSynth features will be disabled. Audio export and real-time playback will not be available."
     )
-    FLUIDSYNTH_AVAILABLE = False
 
 try:
     from pythonosc import osc_server
@@ -104,18 +103,12 @@ class ProjectState:
 
 class MidiCompositionServer:
     def __init__(self) -> None:
-        # FluidSynth state
-        self.fs: Optional[FluidSynth] = None if FLUIDSYNTH_AVAILABLE else None
-        self.sfid: Optional[int] = None
-        self.synth_settings: Dict[str, Any] = {
-            "gain": 1.0,
-            "reverb": {"room_size": 0.2, "damping": 0.0, "width": 0.5, "level": 0.9},
-            "chorus": {"nr": 3, "level": 2.0, "speed": 0.3, "depth": 8.0, "type": 0},
-        }
-
-        # Project state
+        """Initialize the MIDI composition server."""
         self.current_project: Optional[ProjectState] = None
         self.projects: Dict[str, ProjectState] = {}
+
+        # Initialize soundfont manager
+        self.soundfont_manager = SoundfontManager()
 
         # Real-time collaboration state
         self.connected_clients: set[str] = set()
@@ -288,16 +281,19 @@ class MidiCompositionServer:
             if self.fs:
                 self.fs.all_notes_off(channel)
 
-    def play_audio_file(self, project_name: str, audio_path: str) -> Dict[str, Any]:
+    def play_audio_file(self, audio_path: str) -> Dict[str, Any]:
         """Play an audio file using afplay."""
         try:
-            import subprocess
+            # Check if file exists
+            if not os.path.exists(audio_path):
+                return {"success": False, "error": f"File not found: {audio_path}"}
 
-            subprocess.run(["afplay", audio_path])
+            subprocess.run(["afplay", audio_path], check=True)
             return {"success": True}
+        except subprocess.CalledProcessError as e:
+            return {"success": False, "error": f"Error playing audio: {str(e)}"}
         except Exception as e:
-            logging.error(f"Error playing audio file: {e}")
-            return {"success": False, "error": str(e)}
+            return {"success": False, "error": f"Unexpected error: {str(e)}"}
 
     def create_track(self, name: str, instrument: int, channel: int) -> bool:
         """Create a new track with specified instrument"""
@@ -446,10 +442,6 @@ class MidiCompositionServer:
             return False
 
         try:
-            # Initialize FluidSynth if not already done
-            if not self.fs:
-                self.initialize_fluidsynth()
-
             # First export to MIDI
             midi_path = path.replace(f".{format}", ".mid")
             if not self.export_midi(midi_path):
@@ -457,6 +449,14 @@ class MidiCompositionServer:
 
             # Use FluidSynth to convert MIDI to WAV
             if format.lower() == "wav":
+                # Get the current soundfont path
+                soundfonts = self.soundfont_manager.list_soundfonts()
+                if not soundfonts["success"] or not soundfonts["data"]["soundfonts"]:
+                    # Use default soundfont
+                    soundfont_path = "Mario_Party_DS_HQ.sf2"
+                else:
+                    soundfont_path = soundfonts["data"]["soundfonts"][0]["path"]
+
                 cmd = [
                     "fluidsynth",
                     "-ni",
@@ -466,7 +466,7 @@ class MidiCompositionServer:
                     "44100",
                     "-g",
                     "1.0",
-                    "Mario_Party_DS_HQ.sf2",
+                    soundfont_path,
                     midi_path,
                 ]
                 result = subprocess.run(cmd, capture_output=True, text=True)
@@ -643,10 +643,83 @@ class MidiCompositionServer:
 
     def cleanup(self) -> None:
         """Clean up resources"""
-        if self.fs:
-            try:
-                self.fs.delete()
-                logging.info("Successfully cleaned up FluidSynth")
-            except Exception as e:
-                logging.error(f"Error cleaning up FluidSynth: {str(e)}")
-        self.fs = None
+        self.soundfont_manager.cleanup()
+
+    def add_notes(self, track_name: str, notes: List[Dict[str, int]]) -> Dict[str, Any]:
+        """Add multiple note events to a track.
+
+        Args:
+            track_name: Name of the track to add notes to
+            notes: List of note events, each containing:
+                - note: MIDI note number (0-127)
+                - velocity: Note velocity (0-127)
+                - time: Time in ticks
+
+        Returns:
+            Dict with success status and error message if failed
+        """
+        try:
+            with self.state_lock:
+                if not self.current_project:
+                    return {"success": False, "error": "No project is currently loaded"}
+
+                if track_name not in self.current_project.tracks:
+                    return {
+                        "success": False,
+                        "error": f"Track '{track_name}' not found",
+                    }
+
+                # Validate notes
+                for note in notes:
+                    if not isinstance(note, dict):
+                        return {
+                            "success": False,
+                            "error": "Each note must be a dictionary",
+                        }
+                    if "note" not in note or "velocity" not in note:
+                        return {
+                            "success": False,
+                            "error": "Each note must have 'note' and 'velocity' fields",
+                        }
+                    if not (0 <= note["note"] <= 127 and 0 <= note["velocity"] <= 127):
+                        return {
+                            "success": False,
+                            "error": "Note and velocity must be between 0 and 127",
+                        }
+
+                # Add all notes to the track
+                track = self.current_project.tracks[track_name]
+                for note in notes:
+                    event = {
+                        "type": "note",
+                        "note": note["note"],
+                        "velocity": note["velocity"],
+                        "time": note.get("time", 0),
+                    }
+                    track.events.append(event)
+
+                self._save_state()
+                return {"success": True}
+
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+
+    def add_soundfont(self, soundfont_path: str) -> Dict[str, Any]:
+        """Add a soundfont to FluidSynth."""
+        return self.soundfont_manager.add_soundfont(soundfont_path)
+
+    def remove_soundfont(self, soundfont_id: int) -> Dict[str, Any]:
+        """Remove a soundfont from FluidSynth."""
+        return self.soundfont_manager.remove_soundfont(soundfont_id)
+
+    def list_soundfonts(self) -> Dict[str, Any]:
+        """List all loaded soundfonts."""
+        return self.soundfont_manager.list_soundfonts()
+
+    def find_soundfont(self, search_term: str) -> Dict[str, Any]:
+        """Search for a soundfont by name."""
+        return self.soundfont_manager.find_soundfont(search_term)
+
+    def download_soundfont(self, search_term: str) -> Dict[str, Any]:
+        """Download a soundfont by name."""
+        return self.soundfont_manager.download_soundfont(search_term)

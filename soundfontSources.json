@@ -1,0 +1,19 @@
+{
+  "soundfonts": [
+    {
+      "name": "Piano",
+      "category": "Piano",
+      "url": "https://example.com/piano.sf2"
+    },
+    {
+      "name": "Guitar",
+      "category": "Guitar",
+      "url": "https://example.com/guitar.sf2"
+    },
+    {
+      "name": "Strings",
+      "category": "Strings",
+      "url": "https://example.com/strings.sf2"
+    }
+  ]
+}

@@ -211,6 +211,26 @@ async def export_audio(
     return {"success": False}
 
 
+@mcp.tool()
+async def add_note_event(
+    project_name: str, track_name: str, note: int, velocity: int, time: int = 0
+) -> Dict[str, Any]:
+    """Add a note event to a track in the specified project."""
+    server = MidiCompositionServer()
+    if server.load_project(project_name) and server.current_project is not None:
+        with server.state_lock:
+            if track_name not in server.current_project.tracks:
+                return {"success": False, "error": "Track not found"}
+
+            track = server.current_project.tracks[track_name]
+            track.events.append(
+                {"type": "note", "note": note, "velocity": velocity, "time": time}
+            )
+            server._save_state()
+            return {"success": True}
+    return {"success": False}
+
+
 @dataclass
 class TrackState:
     name: str
@@ -449,6 +469,19 @@ class MidiCompositionServer:
         """Load and play existing MIDI files"""
         pass
 
+    def play_audio_file(self, project_name: str, audio_path: str) -> Dict[str, Any]:
+        """Play an audio file using pygame."""
+        try:
+            import pygame
+
+            pygame.mixer.init()
+            pygame.mixer.music.load(audio_path)
+            pygame.mixer.music.play()
+            return {"success": True}
+        except Exception as e:
+            logging.error(f"Error playing audio file: {e}")
+            return {"success": False, "error": str(e)}
+
     def record_midi(self, duration):
         """Record MIDI input for a specified duration"""
         pass
@@ -553,6 +586,43 @@ class MidiCompositionServer:
     def load_project(self, name: str) -> bool:
         """Load a saved project"""
         return self._load_state(name)
+
+    def remove_project(self, project_name: str) -> Dict[str, Any]:
+        """Remove a project from the workspace.
+
+        Args:
+            project_name: Name of the project to remove
+
+        Returns:
+            Dict containing success status and optional error message
+        """
+        try:
+            # Get project file path
+            project_file = self.workspace_dir / f"{project_name}.json"
+
+            # Check if project exists
+            if not project_file.exists():
+                return {
+                    "success": False,
+                    "error": f"Project '{project_name}' not found",
+                }
+
+            # Remove from current project if it's the one being deleted
+            if self.current_project and self.current_project.name == project_name:
+                self.current_project = None
+
+            # Remove from projects dict
+            if project_name in self.projects:
+                del self.projects[project_name]
+
+            # Delete the project file
+            project_file.unlink()
+
+            return {"success": True}
+
+        except Exception as e:
+            logging.error(f"Error removing project {project_name}: {e}")
+            return {"success": False, "error": str(e)}
 
     def export_midi(self, path: str) -> bool:
         """Export the composition as a standard MIDI file"""
@@ -673,23 +743,7 @@ class MidiCompositionServer:
         pass
 
     def debug_project_file(self, project_name: str) -> Dict[str, Any]:
-        """Debug function to inspect a project file and its contents.
-
-        Args:
-            project_name: Name of the project to inspect
-
-        Returns:
-            Dict containing debug information about the project file:
-            {
-                'file_exists': bool,
-                'file_path': str,
-                'file_size': int,
-                'file_contents': dict or None,
-                'current_project': bool,
-                'in_projects_dict': bool,
-                'error': str or None
-            }
-        """
+        """Debug function to inspect a project file and its contents."""
         try:
             debug_info = {
                 "file_exists": False,
@@ -738,6 +792,58 @@ class MidiCompositionServer:
                 "in_projects_dict": False,
                 "error": f"Debug function error: {str(e)}",
             }
+
+    def inspect_projects(self) -> Dict[str, Any]:
+        """Inspect all projects in the workspace directory.
+
+        Returns a dictionary containing:
+        - projects: List of project names
+        - details: Dictionary mapping project names to their details (tempo, time signature, tracks)
+        """
+        projects = {}
+
+        try:
+            # Get all JSON files in the workspace directory
+            project_files = list(self.workspace_dir.glob("*.json"))
+
+            for project_file in project_files:
+                try:
+                    with open(project_file) as f:
+                        data = json.load(f)
+                        project_name = project_file.stem
+                        projects[project_name] = {
+                            "name": data.get("name", project_name),
+                            "tempo": data.get("tempo", 120),
+                            "time_signature": data.get("time_signature", [4, 4]),
+                            "tracks": {
+                                track_name: {
+                                    "instrument": track_data.get("instrument", 0),
+                                    "channel": track_data.get("channel", 0),
+                                    "is_muted": track_data.get("is_muted", False),
+                                    "is_solo": track_data.get("is_solo", False),
+                                    "volume": track_data.get("volume", 1.0),
+                                    "pan": track_data.get("pan", 0.0),
+                                    "event_count": len(track_data.get("events", [])),
+                                }
+                                for track_name, track_data in data.get(
+                                    "tracks", {}
+                                ).items()
+                            },
+                        }
+                except json.JSONDecodeError as e:
+                    logging.error(f"Error reading project file {project_file}: {e}")
+                    continue
+                except Exception as e:
+                    logging.error(f"Unexpected error processing {project_file}: {e}")
+                    continue
+
+            return {
+                "success": True,
+                "data": {"project_count": len(projects), "projects": projects},
+            }
+        except Exception as e:
+            logging.error(f"Error inspecting projects: {e}")
+            return {"success": False, "error": str(e)}
 
     def cleanup(self) -> None:
         """Clean up resources"""
@@ -798,3 +904,56 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+
+
+@mcp.tool()
+async def inspect_projects() -> Dict[str, Any]:
+    """Inspect all projects in the workspace directory.
+
+    Returns a dictionary containing:
+    - projects: List of project names
+    - details: Dictionary mapping project names to their details (tempo, time signature, tracks)
+    """
+    server = MidiCompositionServer()
+    projects = {}
+
+    try:
+        # Get all JSON files in the workspace directory
+        project_files = list(server.workspace_dir.glob("*.json"))
+
+        for project_file in project_files:
+            try:
+                with open(project_file) as f:
+                    data = json.load(f)
+                    project_name = project_file.stem
+                    projects[project_name] = {
+                        "name": data.get("name", project_name),
+                        "tempo": data.get("tempo", 120),
+                        "time_signature": data.get("time_signature", [4, 4]),
+                        "tracks": {
+                            track_name: {
+                                "instrument": track_data.get("instrument", 0),
+                                "channel": track_data.get("channel", 0),
+                                "is_muted": track_data.get("is_muted", False),
+                                "is_solo": track_data.get("is_solo", False),
+                                "volume": track_data.get("volume", 1.0),
+                                "pan": track_data.get("pan", 0.0),
+                                "event_count": len(track_data.get("events", [])),
+                            }
+                            for track_name, track_data in data.get("tracks", {}).items()
+                        },
+                    }
+            except json.JSONDecodeError as e:
+                logging.error(f"Error reading project file {project_file}: {e}")
+                continue
+            except Exception as e:
+                logging.error(f"Unexpected error processing {project_file}: {e}")
+                continue
+
+        return {
+            "success": True,
+            "data": {"project_count": len(projects), "projects": projects},
+        }
+    except Exception as e:
+        logging.error(f"Error inspecting projects: {e}")
+        return {"success": False, "error": str(e)}

@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "synth": {
+      "command": "sh",
+      "args": [
+        "-c",
+        "DYLD_LIBRARY_PATH=/opt/homebrew/lib uv --directory /Users/junekim/Documents/synth run server.py"
+      ]
+    }
+  }
+} 
